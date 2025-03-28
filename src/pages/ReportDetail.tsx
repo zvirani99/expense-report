@@ -1,44 +1,54 @@
 import React, { useState, useEffect, useCallback } from 'react';
     import { useParams, Link, useNavigate } from 'react-router-dom';
     import { supabase } from '../lib/supabase';
-    import { useUser } from '../lib/UserContext'; // Import useUser
+    import { useUser } from '../lib/UserContext';
     import DatePicker from 'react-datepicker';
     import "react-datepicker/dist/react-datepicker.css";
-    import { Trash2, Edit, Save, XCircle, Receipt, ThumbsUp, ThumbsDown, ArrowLeft } from 'lucide-react'; // Added ArrowLeft
+    import { Trash2, Edit, Save, XCircle, Receipt, ThumbsUp, ThumbsDown, ArrowLeft } from 'lucide-react';
 
-    // Interfaces remain the same
     interface ExpenseReport {
       id: string;
       created_at: string;
-      total_amount: number;
+      total_amount: number; // Stored as dollars in DB
       status: string;
       user_id: string;
     }
 
     interface ExpenseItem {
-      id: string;
+      id: string; // Frontend temporary ID
       date: Date;
-      amount: number;
+      amount: number; // Stored as dollars in DB, handled as cents in frontend state for editing
       category: string;
+      description?: string; // Optional description
       receipt_url?: string;
-      receipt?: File;
+      receipt?: File; // For uploads during edit
       isNew?: boolean;
       isDeleted?: boolean;
-      db_id?: string;
+      db_id?: string; // Actual database ID
     }
 
+    // Updated categories
     const categories = [
-      'Travel', 'Meals', 'Supplies', 'Software', 'Hardware', 'Office Equipment', 'Other',
+      'Airfare',
+      'Car Rental',
+      'Cabs/Tolls/Tips',
+      'Lodging',
+      'Parking',
+      'Meals - Breakfast',
+      'Meals - Lunch',
+      'Meals - Dinner',
+      'Meals - Other',
+      'Other',
     ];
 
     function ReportDetail() {
       const { reportId } = useParams<{ reportId: string }>();
-      const { user, isAdmin, loading: userLoading } = useUser(); // Use context hook
+      const { user, isAdmin, loading: userLoading } = useUser();
       const navigate = useNavigate();
       const [report, setReport] = useState<ExpenseReport | null>(null);
-      const [reportOwnerEmail, setReportOwnerEmail] = useState<string | null>(null); // State for owner email
-      const [items, setItems] = useState<ExpenseItem[]>([]);
-      const [editedItems, setEditedItems] = useState<ExpenseItem[]>([]);
+      const [reportOwnerEmail, setReportOwnerEmail] = useState<string | null>(null);
+      const [items, setItems] = useState<ExpenseItem[]>([]); // Items as fetched (amount in dollars)
+      const [editedItems, setEditedItems] = useState<ExpenseItem[]>([]); // Items for editing (amount in cents)
       const [loading, setLoading] = useState(true);
       const [error, setError] = useState<string | null>(null);
       const [isEditing, setIsEditing] = useState(false);
@@ -46,10 +56,21 @@ import React, { useState, useEffect, useCallback } from 'react';
       const [isDeleting, setIsDeleting] = useState(false);
       const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
 
-      // Derived states based on context and report data
       const canEdit = !userLoading && (isAdmin || (report?.user_id === user?.id && (report?.status === 'submitted' || report?.status === 'rejected')));
       const canDelete = !userLoading && !isAdmin && report?.user_id === user?.id && (report?.status === 'submitted' || report?.status === 'rejected');
       const canApproveReject = !userLoading && isAdmin && report?.status === 'submitted';
+
+      // Helper to format cents to dollars for display/DB
+      const formatCurrency = (valueInCents: number): string => {
+        const amountInDollars = valueInCents / 100;
+        return amountInDollars.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+      };
+
+      // Helper to parse currency string (like $12.34) back to cents
+      const parseCurrencyToCents = (value: string): number => {
+          const digitsOnly = value.replace(/[$,.]/g, ''); // Remove $, .
+          return parseInt(digitsOnly || '0', 10);
+      };
 
       const fetchReportDetails = useCallback(async () => {
         if (userLoading || !user || !reportId) {
@@ -59,10 +80,9 @@ import React, { useState, useEffect, useCallback } from 'react';
 
         setLoading(true);
         setError(null);
-        setReportOwnerEmail(null); // Reset email on fetch
+        setReportOwnerEmail(null);
 
         try {
-          // Fetch report details
           const { data: reportData, error: reportError } = await supabase
             .from('expenses')
             .select('id, created_at, total_amount, status, user_id')
@@ -73,7 +93,6 @@ import React, { useState, useEffect, useCallback } from 'react';
           if (!reportData) throw new Error('Report not found or access denied.');
           setReport(reportData);
 
-          // Fetch owner's email if admin is viewing someone else's report
           if (isAdmin && reportData.user_id !== user.id) {
             const { data: ownerData, error: ownerError } = await supabase
               .from('user_roles')
@@ -83,16 +102,15 @@ import React, { useState, useEffect, useCallback } from 'react';
 
             if (ownerError) {
               console.warn(`Could not fetch owner email for user ${reportData.user_id}:`, ownerError.message);
-              setReportOwnerEmail('Email not found'); // Provide fallback text
+              setReportOwnerEmail('Email not found');
             } else if (ownerData) {
               setReportOwnerEmail(ownerData.email);
             }
           }
 
-          // Fetch expense items
           const { data: itemsData, error: itemsError } = await supabase
             .from('expense_items')
-            .select('id, date, amount, category, receipt_url')
+            .select('id, date, amount, category, description, receipt_url') // Fetch description
             .eq('expense_id', reportId)
             .order('date', { ascending: true });
 
@@ -101,11 +119,17 @@ import React, { useState, useEffect, useCallback } from 'react';
           const formattedItems = (itemsData || []).map(item => ({
             ...item,
             date: new Date(item.date),
+            amount: item.amount, // Keep amount as dollars for display list
+            description: item.description || undefined, // Handle null description
             db_id: item.id,
-            id: crypto.randomUUID(),
+            id: crypto.randomUUID(), // Frontend ID
           }));
           setItems(formattedItems);
-          setEditedItems(JSON.parse(JSON.stringify(formattedItems)));
+          // For editing, convert amount to cents
+          setEditedItems(formattedItems.map(item => ({
+              ...item,
+              amount: Math.round(item.amount * 100) // Convert dollars to cents for editing
+          })));
 
         } catch (err: any) {
           console.error('Error fetching report details:', err);
@@ -130,7 +154,11 @@ import React, { useState, useEffect, useCallback } from 'react';
       const handleEditToggle = () => {
         if (!canEdit && !isEditing) return;
         if (!isEditing) {
-          setEditedItems(JSON.parse(JSON.stringify(items)));
+          // Reset editedItems from items, converting amount to cents
+          setEditedItems(items.map(item => ({
+              ...item,
+              amount: Math.round(item.amount * 100) // Convert dollars to cents
+          })));
         }
         setIsEditing(!isEditing);
         setError(null);
@@ -139,12 +167,32 @@ import React, { useState, useEffect, useCallback } from 'react';
       const addEditedExpense = () => {
         setEditedItems([
           ...editedItems,
-          { id: crypto.randomUUID(), date: new Date(), amount: 0, category: categories[0], isNew: true },
+          { id: crypto.randomUUID(), date: new Date(), amount: 0, category: categories[0], description: '', isNew: true }, // Amount starts at 0 cents
         ]);
       };
 
       const updateEditedExpense = (id: string, updates: Partial<ExpenseItem>) => {
-        setEditedItems(editedItems.map(item => item.id === id ? { ...item, ...updates } : item));
+        setEditedItems(editedItems.map(item => {
+            if (item.id === id) {
+                const updatedItem = { ...item, ...updates };
+                // Clear description if category changes and is not 'Other'
+                if (updates.category && updates.category !== 'Other') {
+                    updatedItem.description = '';
+                }
+                return updatedItem;
+            }
+            return item;
+        }));
+      };
+
+      // Handle amount change in cents for the input
+      const handleEditedAmountChange = (id: string, value: string) => {
+          const digitsOnly = value.replace(/\D/g, '');
+          let newAmountInCents = parseInt(digitsOnly || '0', 10);
+          if (newAmountInCents > 100000000) { // Limit $1,000,000.00
+              newAmountInCents = 100000000;
+          }
+          updateEditedExpense(id, { amount: newAmountInCents });
       };
 
       const removeEditedExpense = (id: string) => {
@@ -162,12 +210,13 @@ import React, { useState, useEffect, useCallback } from 'react';
         const itemIndex = editedItems.findIndex(item => item.id === id);
         if (itemIndex === -1) return;
 
-        updateEditedExpense(id, { receipt: file });
+        updateEditedExpense(id, { receipt: file }); // Show file name immediately
 
         try {
           const reportOwnerId = report.user_id;
-          const uploadId = editedItems[itemIndex].db_id || editedItems[itemIndex].id;
-          const filePath = `${reportOwnerId}/${report.id}/${uploadId}/${file.name}`;
+          // Use db_id if it exists (for existing items), otherwise use the frontend ID (for new items)
+          const uploadItemId = editedItems[itemIndex].db_id || editedItems[itemIndex].id;
+          const filePath = `${reportOwnerId}/${report.id}/${uploadItemId}/${file.name}`;
 
           const { data, error } = await supabase.storage
             .from('receipts')
@@ -176,11 +225,13 @@ import React, { useState, useEffect, useCallback } from 'react';
           if (error) throw error;
 
           const { data: { publicUrl } } = supabase.storage.from('receipts').getPublicUrl(data.path);
+          // Update with the final URL, keep the file object for display until save
           updateEditedExpense(id, { receipt_url: publicUrl, receipt: file });
 
         } catch (error: any) {
           console.error('Error uploading file during edit:', error);
-          updateEditedExpense(id, { receipt: undefined, receipt_url: editedItems[itemIndex].receipt_url });
+          // Revert if upload fails, keep original URL if it existed
+          updateEditedExpense(id, { receipt: undefined, receipt_url: items.find(i => i.id === id)?.receipt_url });
           setError('Failed to upload receipt: ' + error.message);
         }
       };
@@ -209,40 +260,43 @@ import React, { useState, useEffect, useCallback } from 'react';
             if (deleteError) throw new Error(`Failed to delete items: ${deleteError.message}`);
           }
 
-          // 2. Updates
+          // 2. Updates (convert amount back to dollars)
           if (itemsToUpdate.length > 0) {
               const updates = itemsToUpdate.map(item => ({
                   id: item.db_id,
                   date: item.date,
-                  amount: item.amount,
+                  amount: item.amount / 100, // Cents to Dollars
                   category: item.category,
+                  description: item.category === 'Other' ? item.description : null, // Save description only if 'Other'
                   receipt_url: item.receipt_url,
               }));
               const { error: updateError } = await supabase.from('expense_items').upsert(updates, { onConflict: 'id' });
               if (updateError) throw new Error(`Failed to update items: ${updateError.message}`);
           }
 
-          // 3. Insertions
+          // 3. Insertions (convert amount back to dollars)
           if (itemsToInsert.length > 0) {
             const inserts = itemsToInsert.map(item => ({
               expense_id: report.id,
               date: item.date,
-              amount: item.amount,
+              amount: item.amount / 100, // Cents to Dollars
               category: item.category,
+              description: item.category === 'Other' ? item.description : null, // Save description only if 'Other'
               receipt_url: item.receipt_url,
             }));
             const { error: insertError } = await supabase.from('expense_items').insert(inserts);
             if (insertError) throw new Error(`Failed to insert new items: ${insertError.message}`);
           }
 
-          // 4. Update main expense report total and status
+          // 4. Update main expense report total (calculate from cents, convert to dollars) and status
           const finalItems = editedItems.filter(item => !item.isDeleted);
-          const newTotalAmount = finalItems.reduce((sum, item) => sum + item.amount, 0);
-          const newStatus = isAdmin ? report.status : 'submitted';
+          const newTotalAmountInCents = finalItems.reduce((sum, item) => sum + item.amount, 0);
+          const newTotalAmountInDollars = newTotalAmountInCents / 100;
+          const newStatus = isAdmin ? report.status : 'submitted'; // Keep status if admin edits, otherwise resubmit
 
           const { data: updatedExpense, error: updateExpenseError } = await supabase
             .from('expenses')
-            .update({ total_amount: newTotalAmount, status: newStatus })
+            .update({ total_amount: newTotalAmountInDollars, status: newStatus })
             .eq('id', report.id)
             .select()
             .single();
@@ -250,7 +304,7 @@ import React, { useState, useEffect, useCallback } from 'react';
           if (updateExpenseError) throw new Error(`Failed to update report: ${updateExpenseError.message}`);
           if (!updatedExpense) throw new Error('Report update failed or access denied.');
 
-          // 5. Resend email notification if non-admin edits
+          // 5. Resend email notification if non-admin edits and status becomes 'submitted'
           if (!isAdmin && report.user_id === user.id && newStatus === 'submitted') {
             const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
             if (sessionError || !sessionData.session) {
@@ -278,7 +332,7 @@ import React, { useState, useEffect, useCallback } from 'react';
             }
           }
 
-          await fetchReportDetails(); // Re-fetch includes fetching email again if needed
+          await fetchReportDetails(); // Re-fetch data
           setIsEditing(false);
 
         } catch (err: any) {
@@ -300,13 +354,14 @@ import React, { useState, useEffect, useCallback } from 'react';
         setError(null);
 
         try {
-          const { error: deleteItemsError } = await supabase.from('expense_items').delete().eq('expense_id', report.id);
-          if (deleteItemsError) console.warn('Error deleting expense items (might be due to CASCADE):', deleteItemsError);
+          // Items should be deleted by CASCADE constraint on the DB, but explicit delete is safer if not set
+          // const { error: deleteItemsError } = await supabase.from('expense_items').delete().eq('expense_id', report.id);
+          // if (deleteItemsError) console.warn('Error deleting expense items (might be due to CASCADE):', deleteItemsError);
 
           const { error: deleteReportError } = await supabase.from('expenses').delete().eq('id', report.id);
           if (deleteReportError) throw new Error(`Failed to delete report: ${deleteReportError.message}`);
 
-          // Consider deleting storage files (complex, omitted for brevity)
+          // TODO: Consider deleting storage files (complex, requires listing files in the folder)
 
           console.log('Report deleted successfully');
           navigate('/reports');
@@ -335,7 +390,7 @@ import React, { useState, useEffect, useCallback } from 'react';
           if (error) throw error;
           if (!data) throw new Error('Failed to update status or access denied.');
 
-          setReport(data);
+          setReport(data); // Update local report state
           console.log(`Report ${report.id} status updated to ${newStatus}`);
 
         } catch (err: any) {
@@ -356,6 +411,7 @@ import React, { useState, useEffect, useCallback } from 'react';
           return <div className="p-6 text-center text-gray-600">Report not found or access denied.</div>;
       }
 
+      // Separate error display for general errors vs. edit mode errors
       if (error && !isEditing) {
           return (
               <div className="min-h-screen bg-gray-50">
@@ -390,11 +446,9 @@ import React, { useState, useEffect, useCallback } from 'react';
                   {report && (
                     <p className="text-sm text-gray-500">
                       Submitted on: {new Date(report.created_at).toLocaleDateString()}
-                      {/* Show user EMAIL if admin is viewing someone else's report */}
                       {isAdmin && report.user_id !== user?.id && reportOwnerEmail && (
                         <span> by: {reportOwnerEmail}</span>
                       )}
-                      {/* Fallback to ID if email fetch failed or is pending */}
                       {isAdmin && report.user_id !== user?.id && !reportOwnerEmail && (
                         <span> by User ID: {report.user_id}</span>
                       )}
@@ -402,7 +456,7 @@ import React, { useState, useEffect, useCallback } from 'react';
                   )}
                 </div>
                 {!isEditing && (
-                   <Link to="/reports" className="flex items-center gap-1 text-blue-600 hover:text-blue-800"> {/* Added icon and gap */}
+                   <Link to="/reports" className="flex items-center gap-1 text-blue-600 hover:text-blue-800">
                      <ArrowLeft size={16} /> Back to Reports List
                    </Link>
                 )}
@@ -421,6 +475,7 @@ import React, { useState, useEffect, useCallback } from 'react';
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                     <div>
                       <span className="font-medium text-gray-700">Total Amount:</span>
+                      {/* Display total amount formatted as currency */}
                       <p className="text-lg font-semibold text-gray-900">${report.total_amount.toFixed(2)}</p>
                     </div>
                     <div>
@@ -492,6 +547,7 @@ import React, { useState, useEffect, useCallback } from 'react';
                            <tr>
                              <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
                              <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Category</th>
+                             <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Description</th>
                              <th scope="col" className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
                              <th scope="col" className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Receipt</th>
                            </tr>
@@ -501,7 +557,8 @@ import React, { useState, useEffect, useCallback } from 'react';
                             <tr key={item.id}>
                               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{item.date.toLocaleDateString()}</td>
                               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.category}</td>
-                              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">${item.amount.toFixed(2)}</td>
+                              <td className="px-6 py-4 text-sm text-gray-500">{item.description || 'N/A'}</td> {/* Display description */}
+                              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 text-right">${item.amount.toFixed(2)}</td> {/* Amount in dollars */}
                               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 text-center">
                                 {item.receipt_url ? (
                                   <a href={item.receipt_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:text-blue-800 hover:underline">
@@ -528,7 +585,6 @@ import React, { useState, useEffect, useCallback } from 'react';
                   {editedItems.map((item) => (
                     !item.isDeleted && (
                       <div key={item.id} className="mb-6 p-4 border rounded-lg bg-gray-50 relative">
-                        {/* Item Form Fields */}
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                           <div>
                             <label className="block text-sm font-medium text-gray-700 mb-1">Date</label>
@@ -536,31 +592,53 @@ import React, { useState, useEffect, useCallback } from 'react';
                           </div>
                           <div>
                             <label className="block text-sm font-medium text-gray-700 mb-1">Amount ($)</label>
-                            <input type="number" value={item.amount} onChange={(e) => updateEditedExpense(item.id, { amount: parseFloat(e.target.value) || 0 })} className="w-full p-2 border rounded" step="0.01" min="0" />
+                            {/* Input handles cents, displays formatted currency */}
+                            <input
+                                type="text"
+                                value={formatCurrency(item.amount)} // Display formatted cents
+                                onChange={(e) => handleEditedAmountChange(item.id, e.target.value)}
+                                className="w-full p-2 border rounded"
+                                placeholder="$0.00"
+                            />
                           </div>
-                          <div>
+                          <div className="md:col-span-1">
                             <label className="block text-sm font-medium text-gray-700 mb-1">Category</label>
                             <select value={item.category} onChange={(e) => updateEditedExpense(item.id, { category: e.target.value })} className="w-full p-2 border rounded">
                               {categories.map((cat) => <option key={cat} value={cat}>{cat}</option>)}
                             </select>
                           </div>
-                          <div>
+                          {/* Conditional Description Field */}
+                          {item.category === 'Other' && (
+                            <div className="md:col-span-1">
+                              <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
+                              <input
+                                type="text"
+                                value={item.description || ''}
+                                onChange={(e) => updateEditedExpense(item.id, { description: e.target.value })}
+                                className="w-full p-2 border rounded"
+                                placeholder="Please specify"
+                                maxLength={100}
+                              />
+                            </div>
+                          )}
+                          <div className="md:col-span-2"> {/* Receipt takes full width */}
                             <label className="block text-sm font-medium text-gray-700 mb-1">Receipt</label>
                             <div className="flex items-center gap-2">
                               <input type="file" accept="image/*,application/pdf,.heic,.heif" onChange={(e) => e.target.files && handleEditedFileChange(item.id, e.target.files[0])} className="hidden" id={`edit-receipt-${item.id}`} />
                               <label htmlFor={`edit-receipt-${item.id}`} className="flex items-center gap-2 px-3 py-1.5 bg-gray-200 rounded cursor-pointer hover:bg-gray-300 text-sm">
                                 <Receipt size={16} /> {item.receipt ? 'Change' : (item.receipt_url ? 'Replace' : 'Upload')}
                               </label>
+                              {/* Show current URL if no new file is staged */}
                               {item.receipt_url && !item.receipt && (
                                 <a href={item.receipt_url} target="_blank" rel="noopener noreferrer" className="text-sm text-blue-600 hover:underline truncate max-w-[150px]" title="View current receipt">View Current</a>
                               )}
+                               {/* Show staged file name */}
                                {item.receipt && (
                                  <span className="text-sm text-gray-600 truncate max-w-[150px]" title={item.receipt.name}>{item.receipt.name}</span>
                                )}
                             </div>
                           </div>
                         </div>
-                        {/* Remove Button */}
                         <button onClick={() => removeEditedExpense(item.id)} className="absolute top-2 right-2 text-red-500 hover:text-red-700" title="Remove Item">
                           <XCircle size={20} />
                         </button>
@@ -568,13 +646,12 @@ import React, { useState, useEffect, useCallback } from 'react';
                     )
                   ))}
 
-                  {/* Add Item Button */}
                   <button onClick={addEditedExpense} className="mt-4 mb-6 flex items-center gap-2 px-4 py-2 bg-gray-100 rounded hover:bg-gray-200 text-sm">Add Another Item</button>
 
-                  {/* Edit Mode Actions */}
                   <div className="flex justify-end items-center gap-4 mt-6 border-t pt-4">
                      <div className="text-lg font-semibold mr-auto">
-                       New Total: ${editedItems.filter(i => !i.isDeleted).reduce((sum, exp) => sum + exp.amount, 0).toFixed(2)}
+                       {/* Calculate total from cents, display formatted */}
+                       New Total: {formatCurrency(editedItems.filter(i => !i.isDeleted).reduce((sum, exp) => sum + exp.amount, 0))}
                      </div>
                      <button onClick={handleEditToggle} disabled={isSaving} className="px-4 py-2 bg-gray-200 rounded hover:bg-gray-300">Cancel</button>
                      <button

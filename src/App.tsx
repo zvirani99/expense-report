@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react'; // Added useEffect
-    import { PlusCircle, Receipt, Send, Trash2, LogOut, CheckCircle, AlertCircle, Clock } from 'lucide-react'; // Added icons
+import React, { useState, useEffect } from 'react';
+    import { PlusCircle, Receipt, Send, Trash2, LogOut, CheckCircle, AlertCircle, Clock } from 'lucide-react';
     import DatePicker from 'react-datepicker';
     import "react-datepicker/dist/react-datepicker.css";
     import { supabase } from './lib/supabase';
@@ -9,34 +9,43 @@ import React, { useState, useEffect } from 'react'; // Added useEffect
     interface ExpenseItem {
       id: string;
       date: Date;
-      amount: number;
+      amount: number; // Stored as cents
       category: string;
+      description?: string; // Optional description field
       receipt?: File;
       receiptUrl?: string;
     }
 
-    // Define interface for summary counts
     interface ReportSummary {
       submitted: number;
       approved: number;
       rejected: number;
     }
 
+    // Updated categories
     const categories = [
-      'Travel', 'Meals', 'Supplies', 'Software', 'Hardware', 'Office Equipment', 'Other',
+      'Airfare',
+      'Car Rental',
+      'Cabs/Tolls/Tips',
+      'Lodging',
+      'Parking',
+      'Meals - Breakfast',
+      'Meals - Lunch',
+      'Meals - Dinner',
+      'Meals - Other',
+      'Other', // Keep 'Other' at the end or where appropriate
     ];
 
     function App() {
       const navigate = useNavigate();
-      const { user, isAdmin, loading: userLoading } = useUser(); // Get isAdmin from context
+      const { user, isAdmin, loading: userLoading } = useUser();
       const [expenses, setExpenses] = useState<ExpenseItem[]>([]);
       const [isReviewing, setIsReviewing] = useState(false);
       const [isSubmitting, setIsSubmitting] = useState(false);
-      const [summary, setSummary] = useState<ReportSummary>({ submitted: 0, approved: 0, rejected: 0 }); // State for summary
-      const [summaryLoading, setSummaryLoading] = useState(true); // Loading state for summary
-      const [summaryError, setSummaryError] = useState<string | null>(null); // Error state for summary
+      const [summary, setSummary] = useState<ReportSummary>({ submitted: 0, approved: 0, rejected: 0 });
+      const [summaryLoading, setSummaryLoading] = useState(true);
+      const [summaryError, setSummaryError] = useState<string | null>(null);
 
-      // Fetch summary data
       useEffect(() => {
         const fetchSummary = async () => {
           if (!user) return;
@@ -67,7 +76,7 @@ import React, { useState, useEffect } from 'react'; // Added useEffect
         };
 
         fetchSummary();
-      }, [user]); // Re-fetch if user changes
+      }, [user]);
 
 
       const handleSignOut = async () => {
@@ -78,12 +87,22 @@ import React, { useState, useEffect } from 'react'; // Added useEffect
       const addExpense = () => {
         setExpenses([
           ...expenses,
-          { id: crypto.randomUUID(), date: new Date(), amount: 0, category: categories[0] },
+          { id: crypto.randomUUID(), date: new Date(), amount: 0, category: categories[0], description: '' }, // Initialize description
         ]);
       };
 
       const updateExpense = (id: string, updates: Partial<ExpenseItem>) => {
-        setExpenses(expenses.map(expense => expense.id === id ? { ...expense, ...updates } : expense));
+        setExpenses(expenses.map(expense => {
+          if (expense.id === id) {
+            const updatedExpense = { ...expense, ...updates };
+            // Clear description if category is not 'Other'
+            if (updates.category && updates.category !== 'Other') {
+              updatedExpense.description = '';
+            }
+            return updatedExpense;
+          }
+          return expense;
+        }));
       };
 
       const removeExpense = (id: string) => {
@@ -93,7 +112,6 @@ import React, { useState, useEffect } from 'react'; // Added useEffect
       const handleFileChange = async (id: string, file: File) => {
         if (!user) return;
         try {
-          // Use user's ID in the path regardless of admin status
           const filePath = `${user.id}/${id}/${file.name}`;
           const { data, error } = await supabase.storage.from('receipts').upload(filePath, file, { upsert: true });
           if (error) throw error;
@@ -113,14 +131,22 @@ import React, { useState, useEffect } from 'react'; // Added useEffect
           if (sessionError || !sessionData.session) throw new Error('Could not get user session.');
           const accessToken = sessionData.session.access_token;
 
+          // Calculate total amount from cents
+          const totalAmountInDollars = expenses.reduce((sum, exp) => sum + exp.amount, 0) / 100;
+
           const { data: expense, error: expenseError } = await supabase
             .from('expenses')
-            .insert({ user_id: user.id, total_amount: expenses.reduce((sum, exp) => sum + exp.amount, 0), status: 'submitted' })
+            .insert({ user_id: user.id, total_amount: totalAmountInDollars, status: 'submitted' }) // Submit total in dollars
             .select().single();
           if (expenseError) throw expenseError;
 
           const expenseItems = expenses.map(item => ({
-            expense_id: expense.id, date: item.date, amount: item.amount, category: item.category, receipt_url: item.receiptUrl,
+            expense_id: expense.id,
+            date: item.date,
+            amount: item.amount / 100, // Convert cents to dollars for DB
+            category: item.category,
+            description: item.category === 'Other' ? item.description : null, // Only save description if category is 'Other'
+            receipt_url: item.receiptUrl,
           }));
           const { error: itemsError } = await supabase.from('expense_items').insert(expenseItems);
           if (itemsError) throw itemsError;
@@ -135,7 +161,6 @@ import React, { useState, useEffect } from 'react'; // Added useEffect
           if (!functionResponse.ok) {
             const errorBody = await functionResponse.text();
             console.error('Error calling send-expense-email function:', errorBody);
-            // Log warning but don't block submission success
           } else {
             console.log('Function call response:', await functionResponse.json());
           }
@@ -153,8 +178,6 @@ import React, { useState, useEffect } from 'react'; // Added useEffect
             });
             setSummary(counts);
           }
-          // Optionally navigate
-          // navigate('/reports');
         } catch (error) {
           console.error('Error submitting expenses:', error);
         } finally {
@@ -162,9 +185,8 @@ import React, { useState, useEffect } from 'react'; // Added useEffect
         }
       };
 
-      const formatAsCurrency = (value: number): string => {
-        // Ensure value is treated as cents (integer)
-        const amountInDollars = value / 100;
+      const formatAsCurrency = (valueInCents: number): string => {
+        const amountInDollars = valueInCents / 100;
         return amountInDollars.toLocaleString('en-US', {
           style: 'currency',
           currency: 'USD',
@@ -172,21 +194,18 @@ import React, { useState, useEffect } from 'react'; // Added useEffect
       };
 
       const handleAmountChange = (id: string, value: string) => {
-        // Remove non-digit characters except the decimal point if needed, but we handle as cents
         const digitsOnly = value.replace(/\D/g, '');
-        let newAmount = parseInt(digitsOnly || '0', 10); // Amount is always in cents
+        let newAmountInCents = parseInt(digitsOnly || '0', 10);
 
-        // Check if the new amount exceeds a reasonable limit (e.g., $1,000,000.00)
-        if (newAmount > 100000000) {
-            newAmount = 100000000; // Cap the value
+        if (newAmountInCents > 100000000) { // $1,000,000.00 limit
+            newAmountInCents = 100000000;
         }
 
-        updateExpense(id, { amount: newAmount });
+        updateExpense(id, { amount: newAmountInCents });
       };
 
-      // This function is now only used for displaying the formatted value
-      const getInputValue = (amount: number): string => {
-        return formatAsCurrency(amount);
+      const getInputValue = (amountInCents: number): string => {
+        return formatAsCurrency(amountInCents);
       };
 
 
@@ -195,8 +214,8 @@ import React, { useState, useEffect } from 'react'; // Added useEffect
           <div className="max-w-4xl mx-auto p-6">
             {/* User Info and Sign Out */}
             <div className="flex justify-between items-center mb-4 text-sm">
-              {user && !userLoading && ( // Check userLoading state
-                <span className={`font-medium ${isAdmin ? 'font-bold' : 'text-gray-700'}`}> {/* Base styling */}
+              {user && !userLoading && (
+                <span className={`font-medium ${isAdmin ? 'font-bold' : 'text-gray-700'}`}>
                   Logged in as: <span className={isAdmin ? 'text-red-600' : ''}>{user.email}</span> {isAdmin && '(Admin)'}
                 </span>
               )}
@@ -247,32 +266,46 @@ import React, { useState, useEffect } from 'react'; // Added useEffect
               {!isReviewing ? (
                 <>
                   {expenses.map((expense) => (
-                    <div key={expense.id} className="mb-6 p-4 border rounded-lg bg-gray-50 relative"> {/* Added relative positioning */}
+                    <div key={expense.id} className="mb-6 p-4 border rounded-lg bg-gray-50 relative">
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
                           <label className="block text-sm font-medium text-gray-700 mb-1">Date</label>
-                          <DatePicker selected={expense.date} onChange={(date) => updateExpense(expense.id, { date: date as Date })} className="w-full p-2 border rounded" />
+                          <DatePicker selected={expense.date} onChange={(date) => updateExpense(expense.id, { date: date as Date })} className="w-full p-2 border rounded" dateFormat="yyyy-MM-dd" />
                         </div>
                         <div>
                           <label className="block text-sm font-medium text-gray-700 mb-1">Amount ($)</label>
                           <input
-                            type="text" // Keep as text to allow custom formatting display
-                            value={getInputValue(expense.amount)} // Display formatted value
-                            onChange={(e) => handleAmountChange(expense.id, e.target.value)} // Handle raw input change
+                            type="text"
+                            value={getInputValue(expense.amount)}
+                            onChange={(e) => handleAmountChange(expense.id, e.target.value)}
                             className="w-full p-2 border rounded"
                             placeholder="$0.00"
                           />
                         </div>
-                        <div>
+                        <div className="md:col-span-1"> {/* Category takes full width on small screens */}
                           <label className="block text-sm font-medium text-gray-700 mb-1">Category</label>
                           <select value={expense.category} onChange={(e) => updateExpense(expense.id, { category: e.target.value })} className="w-full p-2 border rounded">
                             {categories.map((category) => <option key={category} value={category}>{category}</option>)}
                           </select>
                         </div>
-                        <div>
+                        {/* Conditional Description Field */}
+                        {expense.category === 'Other' && (
+                          <div className="md:col-span-1"> {/* Description takes full width on small screens */}
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
+                            <input
+                              type="text"
+                              value={expense.description || ''}
+                              onChange={(e) => updateExpense(expense.id, { description: e.target.value })}
+                              className="w-full p-2 border rounded"
+                              placeholder="Please specify"
+                              maxLength={100} // Optional: limit description length
+                            />
+                          </div>
+                        )}
+                        <div className="md:col-span-2"> {/* Receipt takes full width */}
                           <label className="block text-sm font-medium text-gray-700 mb-1">Receipt</label>
                           <div className="flex items-center gap-2">
-                            <input type="file" accept="image/*,application/pdf" onChange={(e) => e.target.files && handleFileChange(expense.id, e.target.files[0])} className="hidden" id={`receipt-${expense.id}`} />
+                            <input type="file" accept="image/*,application/pdf,.heic,.heif" onChange={(e) => e.target.files && handleFileChange(expense.id, e.target.files[0])} className="hidden" id={`receipt-${expense.id}`} />
                             <label htmlFor={`receipt-${expense.id}`} className="flex items-center gap-2 px-4 py-2 bg-gray-200 rounded cursor-pointer hover:bg-gray-300 text-sm">
                               <Receipt className="w-4 h-4" /> {expense.receipt ? 'Change' : 'Upload'}
                             </label>
@@ -284,13 +317,12 @@ import React, { useState, useEffect } from 'react'; // Added useEffect
                           </div>
                         </div>
                       </div>
-                      {/* Remove Button - Positioned top-right */}
                       <button
                         onClick={() => removeExpense(expense.id)}
-                        className="absolute top-2 right-2 text-red-500 hover:text-red-700" // Positioned absolutely
+                        className="absolute top-2 right-2 text-red-500 hover:text-red-700"
                         title="Remove Item"
                       >
-                        <Trash2 className="w-5 h-5" /> {/* Slightly larger icon */}
+                        <Trash2 className="w-5 h-5" />
                       </button>
                     </div>
                   ))}
@@ -312,11 +344,15 @@ import React, { useState, useEffect } from 'react'; // Added useEffect
                   <div className="space-y-4">
                     {expenses.map((expense) => (
                       <div key={expense.id} className="p-4 border rounded-lg">
-                        <div className="grid grid-cols-2 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2">
                           <div><span className="font-medium">Date:</span> {expense.date.toLocaleDateString()}</div>
-                          <div><span className="font-medium">Amount:</span> {formatAsCurrency(expense.amount)}</div> {/* Use formatter */}
-                          <div><span className="font-medium">Category:</span> {expense.category}</div>
-                          <div>
+                          <div><span className="font-medium">Amount:</span> {formatAsCurrency(expense.amount)}</div>
+                          <div className="sm:col-span-2"><span className="font-medium">Category:</span> {expense.category}</div>
+                          {/* Display Description if category is 'Other' and description exists */}
+                          {expense.category === 'Other' && expense.description && (
+                            <div className="sm:col-span-2"><span className="font-medium">Description:</span> {expense.description}</div>
+                          )}
+                          <div className="sm:col-span-2">
                             <span className="font-medium">Receipt:</span>{' '}
                             {expense.receiptUrl ? (
                               <a href={expense.receiptUrl} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:text-blue-700">View Receipt</a>
@@ -326,7 +362,7 @@ import React, { useState, useEffect } from 'react'; // Added useEffect
                       </div>
                     ))}
                     <div className="mt-6 flex justify-between items-center">
-                      <div className="text-lg font-semibold">Total: {formatAsCurrency(expenses.reduce((sum, exp) => sum + exp.amount, 0))}</div> {/* Use formatter */}
+                      <div className="text-lg font-semibold">Total: {formatAsCurrency(expenses.reduce((sum, exp) => sum + exp.amount, 0))}</div>
                       <div className="space-x-4">
                         <button onClick={() => setIsReviewing(false)} className="px-4 py-2 bg-gray-100 rounded hover:bg-gray-200">Edit</button>
                         <button onClick={handleSubmit} disabled={isSubmitting} className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50">
