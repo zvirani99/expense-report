@@ -1,20 +1,28 @@
 import React, { useState, useEffect } from 'react';
     import { supabase } from '../lib/supabase';
     import { useUser } from '../lib/UserContext';
-    import { Link } from 'react-router-dom'; // Import Link
+    import { Link } from 'react-router-dom';
 
-    interface ExpenseReport {
+    // Update interface to include optional user_email for admin view
+    interface ExpenseReportWithRange {
       id: string;
       created_at: string;
       total_amount: number;
       status: string;
+      min_date: string | null;
+      max_date: string | null;
+      user_email?: string; // Added for admin view
+      user_id?: string; // Keep user_id if needed elsewhere
     }
 
     function PreviousReports() {
       const { user } = useUser();
-      const [reports, setReports] = useState<ExpenseReport[]>([]);
+      const [reports, setReports] = useState<ExpenseReportWithRange[]>([]);
       const [loading, setLoading] = useState(true);
       const [error, setError] = useState<string | null>(null);
+
+      // Check if the user is an admin
+      const isAdmin = user?.app_metadata?.is_admin === true;
 
       useEffect(() => {
         const fetchReports = async () => {
@@ -23,13 +31,24 @@ import React, { useState, useEffect } from 'react';
           setLoading(true);
           setError(null);
           try {
-            const { data, error } = await supabase
-              .from('expenses')
-              .select('id, created_at, total_amount, status')
-              .eq('user_id', user.id)
-              .order('created_at', { ascending: false });
+            let data: ExpenseReportWithRange[] | null = null;
+            let fetchError: any = null;
 
-            if (error) throw error;
+            if (isAdmin) {
+              // Admin: Call function to get all reports with user details
+              const { data: adminData, error: adminError } = await supabase.rpc('get_admin_reports_with_details');
+              data = adminData;
+              fetchError = adminError;
+            } else {
+              // Regular User: Call function to get own reports
+              const { data: userData, error: userError } = await supabase.rpc('get_reports_with_date_ranges', {
+                user_id_param: user.id
+              });
+              data = userData;
+              fetchError = userError;
+            }
+
+            if (fetchError) throw fetchError;
             setReports(data || []);
           } catch (err: any) {
             console.error('Error fetching reports:', err);
@@ -40,16 +59,34 @@ import React, { useState, useEffect } from 'react';
         };
 
         fetchReports();
-      }, [user]);
+      }, [user, isAdmin]); // Re-run if user or isAdmin status changes
+
+      // Helper function to format the date range (remains the same)
+      const formatDateRange = (minDateStr: string | null, maxDateStr: string | null): string => {
+        if (!minDateStr || !maxDateStr) {
+          return 'N/A';
+        }
+        const minDate = new Date(minDateStr);
+        const maxDate = new Date(maxDateStr);
+        const minDateLocal = new Date(minDate.getUTCFullYear(), minDate.getUTCMonth(), minDate.getUTCDate());
+        const maxDateLocal = new Date(maxDate.getUTCFullYear(), maxDate.getUTCMonth(), maxDate.getUTCDate());
+        const options: Intl.DateTimeFormatOptions = { year: 'numeric', month: 'numeric', day: 'numeric' };
+        if (minDateLocal.getTime() === maxDateLocal.getTime()) {
+          return minDateLocal.toLocaleDateString(undefined, options);
+        }
+        return `${minDateLocal.toLocaleDateString(undefined, options)} - ${maxDateLocal.toLocaleDateString(undefined, options)}`;
+      };
 
       return (
         <div className="min-h-screen bg-gray-50">
-          <div className="max-w-4xl mx-auto p-6">
+          <div className="max-w-7xl mx-auto p-6"> {/* Increased max-width further */}
             <div className="bg-white rounded-lg shadow-lg p-6">
               <div className="flex justify-between items-center mb-6">
-                <h1 className="text-2xl font-bold text-gray-800">Previous Expense Reports</h1>
+                <h1 className="text-2xl font-bold text-gray-800">
+                  {isAdmin ? 'All Expense Reports' : 'Previous Expense Reports'}
+                </h1>
                 <Link to="/" className="text-blue-600 hover:text-blue-800">
-                  Submit New Report
+                  {isAdmin ? 'Go to Dashboard' : 'Submit New Report'}
                 </Link>
               </div>
 
@@ -57,7 +94,9 @@ import React, { useState, useEffect } from 'react';
               {error && <p className="text-red-600">{error}</p>}
 
               {!loading && !error && reports.length === 0 && (
-                <p className="text-gray-600">You haven't submitted any expense reports yet.</p>
+                <p className="text-gray-600">
+                  {isAdmin ? 'No reports found.' : "You haven't submitted any expense reports yet."}
+                </p>
               )}
 
               {!loading && !error && reports.length > 0 && (
@@ -65,8 +104,17 @@ import React, { useState, useEffect } from 'react';
                   <table className="min-w-full divide-y divide-gray-200">
                     <thead className="bg-gray-50">
                       <tr>
+                        {/* User Column (Admin only) */}
+                        {isAdmin && (
+                          <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            User
+                          </th>
+                        )}
                         <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                           Submission Date
+                        </th>
+                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Expense Date Range
                         </th>
                         <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                           Total Amount
@@ -81,9 +129,18 @@ import React, { useState, useEffect } from 'react';
                     </thead>
                     <tbody className="bg-white divide-y divide-gray-200">
                       {reports.map((report) => (
-                        <tr key={report.id} className="hover:bg-gray-50"> {/* Removed cursor-pointer as link handles it */}
+                        <tr key={report.id} className="hover:bg-gray-50">
+                          {/* User Column Data (Admin only) */}
+                          {isAdmin && (
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                              {report.user_email || 'N/A'}
+                            </td>
+                          )}
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                             {new Date(report.created_at).toLocaleDateString()}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                             {formatDateRange(report.min_date, report.max_date)}
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                             ${report.total_amount.toFixed(2)}
@@ -93,7 +150,7 @@ import React, { useState, useEffect } from 'react';
                               report.status === 'submitted' ? 'bg-yellow-100 text-yellow-800' :
                               report.status === 'approved' ? 'bg-green-100 text-green-800' :
                               report.status === 'rejected' ? 'bg-red-100 text-red-800' :
-                              'bg-gray-100 text-gray-800' // Default/fallback style
+                              'bg-gray-100 text-gray-800'
                             }`}>
                               {report.status}
                             </span>
