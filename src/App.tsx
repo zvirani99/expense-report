@@ -95,6 +95,12 @@ import React, { useState } from 'react';
 
         setIsSubmitting(true);
         try {
+					const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+		      if (sessionError || !sessionData.session) {
+		        throw new Error('Could not get user session for function call.');
+		      }
+		      const accessToken = sessionData.session.access_token;
+					
           const { data: expense, error: expenseError } = await supabase
             .from('expenses')
             .insert({
@@ -122,14 +128,29 @@ import React, { useState } from 'react';
           if (itemsError) throw itemsError;
 
           // Send email notification
-          await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-expense-email`, {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ expenseId: expense.id }),
-          });
+					const functionResponse = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-expense-email`, {
+		        method: 'POST',
+		        headers: {
+		          // *** Use the user's access token ***
+		          'Authorization': `Bearer ${accessToken}`,
+		          'Content-Type': 'application/json',
+		        },
+		        body: JSON.stringify({ expenseId: expense.id }), // Use the verified ID
+		      });
+		
+		      console.log('Function call status:', functionResponse.status);
+		
+		      // Check if the function call itself was successful
+		      if (!functionResponse.ok) {
+		        const errorBody = await functionResponse.text();
+		        console.error('Error calling send-expense-email function:', errorBody);
+		        // Decide if this should throw an error or just log a warning
+		        // For now, let's log it but allow the UI to reset
+		        // throw new Error(`Failed to trigger email notification: ${errorBody}`);
+		      } else {
+		        const result = await functionResponse.json();
+		        console.log('Function call response:', result);
+		      }
 
           setExpenses([]);
           setIsReviewing(false);
