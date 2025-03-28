@@ -60,7 +60,55 @@ CREATE TRIGGER on_auth_user_created
   FOR EACH ROW EXECUTE FUNCTION handle_new_user();
 
 -- 4. Re-apply policies for expenses (dropping existing ones first)
--- ... (Policies for expenses are the same as in the previous response, so they are omitted here for brevity)
+
+DROP POLICY IF EXISTS "Users can insert their own expenses" ON expenses;
+DROP POLICY IF EXISTS "Users can view their own expenses" ON expenses;
+DROP POLICY IF EXISTS "Users can update their own expenses" ON expenses;
+DROP POLICY IF EXISTS "Users can delete their own expenses" ON expenses;
+DROP POLICY IF EXISTS "Admins can view all expenses" ON expenses;
+DROP POLICY IF EXISTS "Admins can update any expense" ON expenses;
+DROP POLICY IF EXISTS "Admins can delete any expense" ON expenses;
+
+
+CREATE POLICY "Users can insert their own expenses" ON expenses
+  FOR INSERT WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Users can view their own expenses" ON expenses
+  FOR SELECT USING (auth.uid() = user_id);
+CREATE POLICY "Users can update their own expenses" ON expenses
+  FOR UPDATE USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Users can delete their own expenses" ON expenses
+  FOR DELETE USING (auth.uid() = user_id);
+
+CREATE POLICY "Admins can view all expenses" ON expenses
+  FOR SELECT USING (is_admin());
+CREATE POLICY "Admins can update any expense" ON expenses
+  FOR UPDATE USING (is_admin()) WITH CHECK (is_admin());
+CREATE POLICY "Admins can delete any expense" ON expenses
+  FOR DELETE USING (is_admin());
+
 
 -- 5. Re-apply policies for expense_items (dropping existing ones first)
--- ... (Policies for expense_items are the same as in the previous response, so they are omitted here for brevity)
+DROP POLICY IF EXISTS "Users can insert items for their own expenses" ON expense_items;
+DROP POLICY IF EXISTS "Users can view items for their own expenses" ON expense_items;
+DROP POLICY IF EXISTS "Users can update items for their own expenses" ON expense_items;
+DROP POLICY IF EXISTS "Users can delete items for their own expenses" ON expense_items;
+DROP POLICY IF EXISTS "Admins can view all expense items" ON expense_items;
+DROP POLICY IF EXISTS "Admins can update any expense item" ON expense_items;
+DROP POLICY IF EXISTS "Admins can delete any expense item" ON expense_items;
+
+CREATE POLICY "Users can insert items for their own expenses" ON expense_items
+  FOR INSERT WITH CHECK (auth.uid() = (SELECT user_id FROM expenses WHERE id = expense_id));
+CREATE POLICY "Users can view items for their own expenses" ON expense_items
+  FOR SELECT USING (auth.uid() = (SELECT user_id FROM expenses WHERE id = expense_id));
+CREATE POLICY "Users can update items for their own expenses" ON expense_items
+  FOR UPDATE USING (auth.uid() = (SELECT user_id FROM expenses WHERE id = expense_id))
+             WITH CHECK (auth.uid() = (SELECT user_id FROM expenses WHERE id = expense_id));
+CREATE POLICY "Users can delete items for their own expenses" ON expense_items
+  FOR DELETE USING (auth.uid() = (SELECT user_id FROM expenses WHERE id = expense_id));
+
+CREATE POLICY "Admins can view all expense items" ON expense_items
+  FOR SELECT USING (is_admin());
+CREATE POLICY "Admins can update any expense item" ON expense_items
+  FOR UPDATE USING (is_admin()) WITH CHECK (is_admin());
+CREATE POLICY "Admins can delete any expense item" ON expense_items
+  FOR DELETE USING (is_admin());
