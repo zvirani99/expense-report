@@ -1,9 +1,8 @@
 import React, { useState, useEffect } from 'react';
     import { supabase } from '../lib/supabase';
-    import { useUser } from '../lib/UserContext';
+    import { useUser } from '../lib/UserContext'; // Import useUser
     import { Link } from 'react-router-dom';
 
-    // Update interface to include optional user_email for admin view
     interface ExpenseReportWithRange {
       id: string;
       created_at: string;
@@ -11,24 +10,34 @@ import React, { useState, useEffect } from 'react';
       status: string;
       min_date: string | null;
       max_date: string | null;
-      user_email?: string; // Added for admin view
-      user_id?: string; // Keep user_id if needed elsewhere
+      user_email?: string;
+      user_id?: string;
     }
 
     function PreviousReports() {
-      const { user } = useUser();
+      const { user, isAdmin, loading: userLoading } = useUser(); // Use context hook
       const [reports, setReports] = useState<ExpenseReportWithRange[]>([]);
       const [loading, setLoading] = useState(true);
       const [error, setError] = useState<string | null>(null);
 
-      // Check if the user is an admin
-      const isAdmin = user?.app_metadata?.is_admin === true;
+      // isAdmin is now directly from context
 
       useEffect(() => {
-        const fetchReports = async () => {
-          if (!user) return;
+        // Wait for user context to finish loading
+        if (userLoading) {
+          setLoading(true); // Keep showing loading indicator
+          return;
+        }
 
-          setLoading(true);
+        const fetchReports = async () => {
+          // If user context loaded but no user, stop.
+          if (!user) {
+              setLoading(false);
+              setReports([]); // Clear reports if user logs out
+              return;
+          }
+
+          setLoading(true); // Start fetching reports
           setError(null);
           try {
             let data: ExpenseReportWithRange[] | null = null;
@@ -54,12 +63,12 @@ import React, { useState, useEffect } from 'react';
             console.error('Error fetching reports:', err);
             setError('Failed to fetch reports. Please try again.');
           } finally {
-            setLoading(false);
+            setLoading(false); // Finish fetching reports
           }
         };
 
         fetchReports();
-      }, [user, isAdmin]); // Re-run if user or isAdmin status changes
+      }, [user, isAdmin, userLoading]); // Re-run if user, isAdmin, or userLoading changes
 
       // Helper function to format the date range (remains the same)
       const formatDateRange = (minDateStr: string | null, maxDateStr: string | null): string => {
@@ -77,9 +86,14 @@ import React, { useState, useEffect } from 'react';
         return `${minDateLocal.toLocaleDateString(undefined, options)} - ${maxDateLocal.toLocaleDateString(undefined, options)}`;
       };
 
+      // Show loading indicator while user context is loading
+      if (userLoading) {
+          return <div className="p-6 text-center text-gray-600">Loading user data...</div>;
+      }
+
       return (
         <div className="min-h-screen bg-gray-50">
-          <div className="max-w-7xl mx-auto p-6"> {/* Increased max-width further */}
+          <div className="max-w-7xl mx-auto p-6">
             <div className="bg-white rounded-lg shadow-lg p-6">
               <div className="flex justify-between items-center mb-6">
                 <h1 className="text-2xl font-bold text-gray-800">
@@ -104,7 +118,6 @@ import React, { useState, useEffect } from 'react';
                   <table className="min-w-full divide-y divide-gray-200">
                     <thead className="bg-gray-50">
                       <tr>
-                        {/* User Column (Admin only) */}
                         {isAdmin && (
                           <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             User
@@ -130,7 +143,6 @@ import React, { useState, useEffect } from 'react';
                     <tbody className="bg-white divide-y divide-gray-200">
                       {reports.map((report) => (
                         <tr key={report.id} className="hover:bg-gray-50">
-                          {/* User Column Data (Admin only) */}
                           {isAdmin && (
                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
                               {report.user_email || 'N/A'}
