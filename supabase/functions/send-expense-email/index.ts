@@ -7,7 +7,42 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
 
+const MAX_RETRIES = 3; // Number of times to retry fetching the expense
+const RETRY_DELAY_MS = 1000; // Delay between retries in milliseconds (1 second)
+
 console.log('Send Expense Email function initializing...');
+
+// Helper function to find expense with retry logic
+async function findExpenseWithRetry(supabase: any, expenseId: string, retries = 0): Promise<any | null> {
+  console.log(`Attempt ${retries + 1}/${MAX_RETRIES} to find expense ID: ${expenseId}`);
+  const { data: expense, error: expenseError } = await supabase
+    .from('expenses')
+    .select('*, expense_items(*)')
+    .eq('id', expenseId)
+    .maybeSingle();
+
+  if (expenseError) {
+    console.error(`Supabase query error on attempt ${retries + 1}:`, expenseError);
+    // Don't retry on actual database errors, just propagate them
+    throw expenseError;
+  }
+
+  if (expense) {
+    console.log(`Expense found on attempt ${retries + 1}`);
+    return expense; // Expense found, return it
+  }
+
+  // If expense not found and retries remain
+  if (retries < MAX_RETRIES - 1) {
+    console.log(`Expense not found, retrying in ${RETRY_DELAY_MS}ms...`);
+    await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+    return findExpenseWithRetry(supabase, expenseId, retries + 1); // Recursive call for retry
+  } else {
+    console.error(`Expense with ID ${expenseId} not found after ${MAX_RETRIES} attempts.`);
+    return null; // Indicate not found after all retries
+  }
+}
+
 
 Deno.serve(async (req) => {
   console.log(`Received request: ${req.method} ${req.url}`);
@@ -34,7 +69,9 @@ Deno.serve(async (req) => {
     console.log('Resend API Key:', resendApiKey ? 'Loaded' : 'Missing');
 
 
-    const supabase = createClient(supabaseUrl, supabaseAnonKey);
+    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+      global: { headers: { Authorization: req.headers.get('Authorization')! } }
+    });
 
     const { expenseId } = await req.json();
     console.log('Received expenseId:', expenseId);
@@ -46,25 +83,13 @@ Deno.serve(async (req) => {
       });
     }
 
-    console.log(`Fetching expense data for ID: ${expenseId}`);
-    // Use maybeSingle() instead of single()
-    const { data: expense, error: expenseError } = await supabase
-      .from('expenses')
-      .select('*, expense_items(*)')
-      .eq('id', expenseId)
-      .maybeSingle(); // Changed from .single()
+    // Use the retry logic to fetch the expense
+    const expense = await findExpenseWithRetry(supabase, expenseId);
 
-    // Handle potential errors during the query
-    if (expenseError) {
-      console.error('Supabase query error:', expenseError);
-      // Throw the error to be caught by the outer try/catch
-      throw expenseError;
-    }
-
-    // Explicitly check if the expense was found
+    // Explicitly check if the expense was found after retries
     if (!expense) {
-      console.error(`Expense with ID ${expenseId} not found.`);
-      return new Response(JSON.stringify({ error: `Expense with ID ${expenseId} not found.` }), {
+      // Use the specific error message from the retry logic
+      return new Response(JSON.stringify({ error: `Expense with ID ${expenseId} not found after ${MAX_RETRIES} attempts.` }), {
         status: 404, // Not Found
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
