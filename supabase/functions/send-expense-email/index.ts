@@ -40,26 +40,40 @@ Deno.serve(async (req) => {
     console.log('Received expenseId:', expenseId);
 
     if (!expenseId) {
-      throw new Error('expenseId is required in the request body');
+      return new Response(JSON.stringify({ error: 'expenseId is required' }), {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
     }
 
     console.log(`Fetching expense data for ID: ${expenseId}`);
+    // Use maybeSingle() instead of single()
     const { data: expense, error: expenseError } = await supabase
       .from('expenses')
       .select('*, expense_items(*)')
       .eq('id', expenseId)
-      .single();
+      .maybeSingle(); // Changed from .single()
 
+    // Handle potential errors during the query
     if (expenseError) {
       console.error('Supabase query error:', expenseError);
+      // Throw the error to be caught by the outer try/catch
       throw expenseError;
     }
 
+    // Explicitly check if the expense was found
     if (!expense) {
-      throw new Error(`Expense with ID ${expenseId} not found.`);
+      console.error(`Expense with ID ${expenseId} not found.`);
+      return new Response(JSON.stringify({ error: `Expense with ID ${expenseId} not found.` }), {
+        status: 404, // Not Found
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
     }
 
     console.log('Expense data fetched successfully:', expense);
+
+    // Ensure expense_items is an array, even if null/undefined from the query
+    const expenseItems = expense.expense_items || [];
 
     const emailBody = `
 New Expense Report Submitted
@@ -67,8 +81,8 @@ New Expense Report Submitted
 Total Amount: $${expense.total_amount}
 
 Expense Items:
-${expense.expense_items.map((item: any) => `
-- Date: ${format(new Date(item.date), 'MMM d, yyyy')}
+${expenseItems.map((item: any) => `
+- Date: ${item.date ? format(new Date(item.date), 'MMM d, yyyy') : 'N/A'}
   Amount: $${item.amount}
   Category: ${item.category}
   Receipt: ${item.receipt_url || 'No receipt uploaded'}
@@ -119,8 +133,12 @@ ${expense.expense_items.map((item: any) => `
       console.error('Error response data:', await error.response.text());
     }
 
+    // Check if it's a Supabase PostgREST error
+    const isSupabaseError = typeof error === 'object' && error !== null && 'code' in error;
+    const statusCode = isSupabaseError ? 400 : 500; // Use 400 for known DB errors, 500 otherwise
+
     return new Response(JSON.stringify({ error: error.message }), {
-      status: 500,
+      status: statusCode,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   }
