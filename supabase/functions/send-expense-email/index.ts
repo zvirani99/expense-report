@@ -14,32 +14,52 @@ console.log('Send Expense Email function initializing...');
 
 // Helper function to find expense and related user email with retry logic
 async function findExpenseAndUserWithRetry(supabase: any, expenseId: string, retries = 0): Promise<{ expense: any; userEmail: string | null } | null> {
-  console.log(`Attempt ${retries + 1}/${MAX_RETRIES} to find expense ID: ${expenseId} and user email`);
+  console.log(`Attempt ${retries + 1}/${MAX_RETRIES} to find expense ID: ${expenseId}`);
+
+  // Step 1: Fetch the expense data including expense_items
   const { data: expense, error: expenseError } = await supabase
     .from('expenses')
     .select(`
       *,
-      expense_items(*),
-      user_roles ( email )
+      expense_items(*)
     `)
     .eq('id', expenseId)
     .maybeSingle();
 
   if (expenseError) {
-    console.error(`Supabase query error on attempt ${retries + 1}:`, expenseError);
-    throw expenseError; // Propagate database errors
+    console.error(`Supabase query error fetching expense on attempt ${retries + 1}:`, expenseError);
+    // Don't retry on database errors, propagate them
+    throw expenseError;
   }
 
+  // If expense is found, proceed to find the user email
   if (expense) {
-    console.log(`Expense found on attempt ${retries + 1}`);
-    // Extract email safely, handling potential nulls
-    const userEmail = expense.user_roles?.email || null;
-    if (!userEmail) {
-        console.warn(`User email not found for expense ID ${expenseId}. User role data:`, expense.user_roles);
+    console.log(`Expense found on attempt ${retries + 1}. User ID: ${expense.user_id}`);
+
+    // Step 2: Fetch the user's email from user_roles using the user_id from the expense
+    let userEmail: string | null = null;
+    if (expense.user_id) {
+      const { data: userRole, error: roleError } = await supabase
+        .from('user_roles')
+        .select('email')
+        .eq('user_id', expense.user_id)
+        .maybeSingle();
+
+      if (roleError) {
+        console.error(`Supabase query error fetching user role for user_id ${expense.user_id}:`, roleError);
+        // Decide if this error should be fatal or just logged
+        // For now, we'll log it and proceed without the email
+      } else if (userRole) {
+        userEmail = userRole.email;
+        console.log(`User email found: ${userEmail}`);
+      } else {
+        console.warn(`User role/email not found for user_id ${expense.user_id}.`);
+      }
+    } else {
+      console.warn(`Expense ID ${expenseId} does not have a user_id associated.`);
     }
-    // Remove user_roles from the main expense object if you don't need it elsewhere
-    const { user_roles, ...expenseData } = expense;
-    return { expense: expenseData, userEmail }; // Expense and email found
+
+    return { expense, userEmail }; // Return expense data and the found email (or null)
   }
 
   // If expense not found and retries remain
@@ -93,7 +113,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Use the retry logic to fetch the expense and user email
+    // Use the updated retry logic to fetch the expense and user email
     const result = await findExpenseAndUserWithRetry(supabase, expenseId);
 
     if (!result) {
@@ -113,10 +133,15 @@ Deno.serve(async (req) => {
     const expenseItems = expense.expense_items || [];
 
     // Sort expense items by date (ascending)
-    expenseItems.sort((a: any, b: any) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    expenseItems.sort((a: any, b: any) => {
+        const dateA = a.date ? new Date(a.date).getTime() : 0;
+        const dateB = b.date ? new Date(b.date).getTime() : 0;
+        return dateA - dateB;
+    });
+
 
     // Calculate date range
-    const dates = expenseItems.map((item: any) => new Date(item.date)).filter((d: Date) => !isNaN(d.getTime()));
+    const dates = expenseItems.map((item: any) => item.date ? new Date(item.date) : null).filter((d: Date | null): d is Date => d !== null && !isNaN(d.getTime()));
     const minDate = dates.length > 0 ? min(dates) : null;
     const maxDate = dates.length > 0 ? max(dates) : null;
     const dateRange = minDate && maxDate
@@ -129,7 +154,7 @@ Deno.serve(async (req) => {
         <td>${item.date ? format(new Date(item.date), 'MMM d, yyyy') : 'N/A'}</td>
         <td>${item.category || 'N/A'}</td>
         <td>$${item.amount?.toFixed(2) || '0.00'}</td>
-        <td>${item.receipt_url ? `<a href="${item.receipt_url}">View</a>` : 'No'}</td>
+        <td>${item.receipt_url ? `<a href="${item.receipt_url}" target="_blank" rel="noopener noreferrer">View</a>` : 'No'}</td>
         <td>${item.description || ''}</td>
       </tr>
     `).join('');
@@ -138,7 +163,7 @@ Deno.serve(async (req) => {
     const emailHtmlBody = `
       <p>Hello,</p>
       <p>A new expense report has been submitted.</p>
-      
+
       <h2>Summary:</h2>
       <ul>
         <li><strong>Submitted By:</strong> ${submitterEmail}</li>
